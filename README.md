@@ -4,265 +4,267 @@
 [![Python](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
-以固定大小的頻譜圖與卷積神經網路（Convolutional Neural Network, CNN）分類病理嗓音的研究工具。
+English | [繁體中文](README.zh-TW.md)
 
-本專案（Python 套件 `voice_spectral_classifier`，命令列工具 `voice-spectral-classifier`）把持續母音的錄音重取樣、去除頭尾靜音並切成 1 秒片段，每個片段算成 40 × 98 的灰階頻譜圖，再交給小型 CNN 分類；沒有 PyTorch 時也能用 MLP 或 logistic regression 當基線。評估採分層、分組的 k 折交叉驗證，片段層級與錄音層級各自回報未加權平均召回率（unweighted average recall, UAR）、混淆矩陣與各類指標。
+A research tool for classifying pathological voices from fixed-size spectrograms with a convolutional neural network (CNN).
 
-作者：RL
+The Python package `voice_spectral_classifier` and its command-line tool `voice-spectral-classifier` take recordings of sustained vowels, resample them, trim leading and trailing silence and cut them into 1-second segments. Each segment becomes a 40 × 98 grey-scale spectrogram, which a small CNN classifies. Either an MLP or logistic regression can stand in as a baseline, and neither needs PyTorch. Evaluation uses stratified, grouped k-fold cross-validation and reports the unweighted average recall (UAR), a confusion matrix and per-class metrics, both for segments and for whole recordings.
+
+Author: RL
 
 ---
 
-## 目錄
+## Contents
 
-- [專案簡介](#專案簡介)
-- [方法說明](#方法說明)
-- [安裝步驟](#安裝步驟)
-- [快速開始](#快速開始)
-- [使用範例](#使用範例)
-- [CLI 指令對照表](#cli-指令對照表)
-- [專案結構](#專案結構)
-- [資料準備](#資料準備)
-- [設定檔](#設定檔)
-- [結果與評估指標](#結果與評估指標)
-- [已知限制](#已知限制)
-- [設計重點](#設計重點)
-- [開發與測試](#開發與測試)
+- [Overview](#overview)
+- [Method](#method)
+- [Installation](#installation)
+- [Quick start](#quick-start)
+- [Usage examples](#usage-examples)
+- [CLI reference](#cli-reference)
+- [Project structure](#project-structure)
+- [Data preparation](#data-preparation)
+- [Configuration files](#configuration-files)
+- [Results and metrics](#results-and-metrics)
+- [Known limitations](#known-limitations)
+- [Design notes](#design-notes)
+- [Development and testing](#development-and-testing)
 - [References](#references)
 - [License](#license)
 
 ---
 
-## 專案簡介
+## Overview
 
-[![voice-spectral-classifier 流程圖](docs/images/workflow.png)](https://raw.githack.com/recklight/voice-spectral-classifier/master/docs/workflow.html?theme=dark)
+[![voice-spectral-classifier workflow](docs/images/workflow.png)](https://raw.githack.com/recklight/voice-spectral-classifier/master/docs/workflow.html?theme=dark)
 
-互動式流程圖：[線上瀏覽](https://raw.githack.com/recklight/voice-spectral-classifier/master/docs/workflow.html?theme=dark)，或在本機用瀏覽器開啟 [`docs/workflow.html`](docs/workflow.html)。
+Interactive workflow diagram: [view it online](https://raw.githack.com/recklight/voice-spectral-classifier/master/docs/workflow.html?theme=dark), or open [`docs/workflow.html`](docs/workflow.html) in a browser.
 
-病理嗓音（例如喉部腫瘤、聲帶麻痺、聲帶結節或息肉造成的發聲異常）會在頻譜上留下痕跡：諧波結構變得模糊、高頻出現氣息雜訊、音高與音量出現顫動，或多出次諧波。把一小段持續母音畫成時頻圖，再交給影像分類器，是常見的自動偵測作法（Alhussein & Muhammad, 2018）；另一條路線是以倒頻譜特徵搭配深度神經網路（Fang et al., 2019）。
+Pathological voices, such as those caused by laryngeal tumors, vocal fold paralysis, nodules or polyps, leave traces in the spectrum: the harmonic structure blurs, breath noise appears at high frequencies, pitch and loudness waver, or subharmonics show up. Turning a short stretch of a sustained vowel into a time-frequency image and handing it to an image classifier is a common way to detect them automatically (Alhussein & Muhammad, 2018); another approach feeds cepstral features to a deep neural network (Fang et al., 2019).
 
-一段錄音通常能切出好幾個片段，預設全部拿來訓練與評估，同一段錄音的片段分數再平均成錄音層級的判斷。評估以受試者分組做交叉驗證，主要看 UAR，因為臨床資料的類別通常不平衡：一律猜多數類別就能拿到不低的 accuracy，UAR 卻只有 1／類別數。
+A recording usually yields several segments. By default all of them are used for training and evaluation, and the segment scores of one recording are averaged into a recording-level decision. Cross-validation is grouped by subject, and UAR is the main metric because clinical data are usually imbalanced: always guessing the majority class earns a respectable accuracy, but a UAR of only 1/K for K classes.
 
-分框、端點偵測、梅爾（mel）濾波器組、dB 換算與 WAV 讀寫來自 [`speechdsp`](https://pypi.org/project/speechdsp/)，UAR 也用它的定義；重取樣使用 SciPy 的多相濾波器。
+Framing, endpoint detection, the mel filterbank, dB conversion and WAV I/O come from [`speechdsp`](https://pypi.org/project/speechdsp/), and so does the definition of UAR; resampling uses SciPy's polyphase filter.
 
-| 階段 | 做什麼 | 對應模組 |
+| Stage | What it does | Module |
 | --- | --- | --- |
-| 1. 資料集索引 | 讀取並驗證 `dataset.csv`（路徑、類別、受試者分組），或由 `<資料夾>/<類別>/<檔案>.wav` 產生 | `dataset` |
-| 2. 切段 | 讀 WAV、以多相濾波器重取樣到統一取樣率、去除頭尾靜音、切成固定長度片段 | `segmentation` |
-| 3. 頻譜圖 | 短時功率譜密度、等寬或 mel 頻帶、相對於片段峰值的 dB、線性量化成 40 × 98 的 8 位元影像 | `spectrogram` |
-| 4. 模型 | 頻譜圖 CNN（PyTorch，選用）、MLP 與 logistic regression 基線、類別不平衡處理 | `cnn`、`models` |
-| 5. 評估 | 分層、分組的 k 折交叉驗證，片段與錄音兩個層級的指標，混淆矩陣圖表 | `evaluation`、`figures` |
-| 6. 流程與輸出 | `prepare`／`train`／`predict` 高階函式、執行資料夾、`config.yaml` 與 `manifest.json` | `pipeline`、`manifest`、`cli` |
-| 7. 合成資料 | 三種嗓音特質的合成持續母音，供測試、範例與快速開始使用 | `synthetic` |
+| 1. Dataset index | Reads and validates `dataset.csv` (paths, classes, subject groups), or builds it from `<folder>/<class>/<file>.wav` | `dataset` |
+| 2. Segmentation | Reads WAV files, resamples them to one common rate with a polyphase filter, trims leading and trailing silence, cuts fixed-length segments | `segmentation` |
+| 3. Spectrogram | Short-time power spectral density, equal-width or mel bands, dB relative to the segment peak, linear quantization to a 40 × 98 8-bit image | `spectrogram` |
+| 4. Models | Spectrogram CNN (PyTorch, optional), MLP and logistic regression baselines, class-imbalance handling | `cnn`, `models` |
+| 5. Evaluation | Stratified, grouped k-fold cross-validation, metrics at segment and recording level, confusion-matrix figures | `evaluation`, `figures` |
+| 6. Pipeline and outputs | The `prepare` / `train` / `predict` high-level functions, run folders, `config.yaml` and `manifest.json` | `pipeline`, `manifest`, `cli` |
+| 7. Synthetic data | Synthetic sustained vowels with three voice qualities, for the tests, the examples and the quick start | `synthetic` |
 
 ---
 
-## 方法說明
+## Method
 
-### 1. 重取樣、去除靜音與固定長度切段
+### 1. Resampling, silence trimming and fixed-length segmentation
 
-每段錄音先以 `speechdsp.read_wav` 讀成單聲道 `float64`，再用多相（polyphase）抗混疊濾波器重取樣到 `segmentation.sample_rate`（預設 16 kHz；Crochiere & Rabiner, 1983）。44.1 kHz 與 48 kHz 混用的錄音因此有相同的時間與頻率解析度，之後所有以毫秒為單位的參數才有一致的意義。8 kHz 以上的成分不會用到，16 kHz 正好保留 0–8 kHz。
+Each recording is read as mono `float64` with `speechdsp.read_wav` and resampled to `segmentation.sample_rate` (16 kHz by default) with a polyphase anti-aliasing filter (Crochiere & Rabiner, 1983). That way, recordings made at a mix of 44.1 kHz and 48 kHz share the same time and frequency resolution, and a parameter given in milliseconds means the same thing for all of them. Nothing above 8 kHz is used, so 16 kHz is enough: it keeps exactly 0–8 kHz.
 
-接著可選擇以雙門檻端點偵測（Rabiner & Sambur, 1975；`speechdsp.trim_silence`）去除頭尾靜音，再切成長度 $L$、位移 $H$ 的片段：第 $i$ 段從第 $iH$ 個樣本開始，完整片段的數量為
+Leading and trailing silence can then be removed with two-threshold endpoint detection (Rabiner & Sambur, 1975; `speechdsp.trim_silence`) before the signal is cut into segments of length $L$ with hop $H$. Segment $i$ starts at sample $iH$, and the number of complete segments is
 
 $$n = \left\lfloor \frac{N - L}{H} \right\rfloor + 1 .$$
 
-最後一個完整片段之後的殘段，若長度至少是 `min_fraction` × $L$，就補零保留，否則捨棄。每個片段記錄它在原錄音中的序號（`segment`，從 0 起算），並帶著錄音路徑與受試者分組 `group`。
+What remains after the last complete segment is zero-padded and kept if it is at least `min_fraction` × $L$ long, and dropped otherwise. Each segment records its position in the recording (`segment`, counting from 0) and carries the recording path and the subject group `group`.
 
-| 設定鍵 | 預設 | 作用 |
+| Key | Default | Effect |
 | --- | --- | --- |
-| `segmentation.sample_rate` | `16000` | 所有錄音重取樣到這個取樣率（Hz） |
-| `segmentation.trim_silence` | `true` | 先去除頭尾靜音 |
-| `segmentation.segment_s` | `1.0` | 片段長度（秒） |
-| `segmentation.hop_s` | `1.0` | 片段位移（秒）；小於 `segment_s` 即為重疊切段 |
-| `segmentation.min_fraction` | `0.5` | 殘段至少要填滿片段的這個比例才補零保留 |
-| `segmentation.max_segments` | `null` | 每段錄音最多保留幾個片段（均勻挑選；只留一個時取中間那段）；`null` 表示全部保留 |
+| `segmentation.sample_rate` | `16000` | Every recording is resampled to this rate (Hz) |
+| `segmentation.trim_silence` | `true` | Trim leading and trailing silence first |
+| `segmentation.segment_s` | `1.0` | Segment length (seconds) |
+| `segmentation.hop_s` | `1.0` | Segment hop (seconds); less than `segment_s` gives overlapping segments |
+| `segmentation.min_fraction` | `0.5` | A leftover piece must fill at least this fraction of a segment to be zero-padded and kept |
+| `segmentation.max_segments` | `null` | At most this many segments per recording (picked evenly; when only one is kept, the middle one); `null` keeps all |
 
-### 2. 短時功率譜密度
+### 2. Short-time power spectral density
 
-片段以 `speechdsp.enframe` 切成音框，乘上分析窗（預設 Hamming；Harris, 1978），補零到 $N_{\mathrm{FFT}}$ 點後做實數 FFT（Allen, 1977）。第 $t$ 個音框的單邊功率譜密度為
+A segment is split into frames with `speechdsp.enframe`, multiplied by an analysis window (Hamming by default; Harris, 1978), zero-padded to $N_{\mathrm{FFT}}$ points and passed through a real FFT (Allen, 1977). The one-sided power spectral density of frame $t$ is
 
-$$P_t[k] = \frac{c_k \, |X_t[k]|^2}{f_s \sum_n w[n]^2}, \qquad c_k = \begin{cases} 1 & k = 0 \text{ 或 Nyquist} \\ 2 & \text{其他} \end{cases}$$
+$$P_t[k] = \frac{c_k \, |X_t[k]|^2}{f_s \sum_n w[n]^2}, \qquad c_k = \begin{cases} 1 & k = 0 \text{ or Nyquist} \\ 2 & \text{otherwise} \end{cases}$$
 
-把它對頻率積分就等於訊號的變異數（測試以白雜訊驗證這個性質）。1 秒是關鍵詞辨識資料集慣用的片段長度（Warden, 2018）；以預設的 25 ms 音框、10 ms 位移分析，1 秒片段恰好得到 $\lfloor (1000 - 25) / 10 \rfloor + 1 = 98$ 個音框，這就是 98 欄的由來。$N_{\mathrm{FFT}}$ 預設為不小於音框長度的最小 2 的冪次（16 kHz 下 400 點音框補零到 512 點）。
+Integrated over frequency it equals the variance of the signal (a test checks this on white noise). With the default 25 ms frames and 10 ms hop, a 1-second segment (the usual clip length in keyword-spotting datasets; Warden, 2018) gives exactly $\lfloor (1000 - 25) / 10 \rfloor + 1 = 98$ frames, which is where the 98 columns come from. By default $N_{\mathrm{FFT}}$ is the next power of two at or above the frame length (at 16 kHz a 400-point frame is zero-padded to 512 points).
 
-| 設定鍵 | 預設 | 作用 |
+| Key | Default | Effect |
 | --- | --- | --- |
-| `spectrogram.frame_ms` | `25.0` | 音框長度（毫秒） |
-| `spectrogram.hop_ms` | `10.0` | 音框位移（毫秒） |
-| `spectrogram.n_fft` | `null` | FFT 點數；`null` 為不小於音框長度的最小 2 的冪次 |
-| `spectrogram.window` | `hamming` | 窗函數：`hamming`、`hann`、`blackman` 或 `boxcar` |
+| `spectrogram.frame_ms` | `25.0` | Frame length (ms) |
+| `spectrogram.hop_ms` | `10.0` | Frame hop (ms) |
+| `spectrogram.n_fft` | `null` | FFT size; `null` is the next power of two at or above the frame length |
+| `spectrogram.window` | `hamming` | Window function: `hamming`, `hann`, `blackman` or `boxcar` |
 
-### 3. 頻帶網格與 8 位元量化
+### 3. Band grid and 8-bit quantization
 
-功率譜在 0 Hz 到 `fmax_hz` 之間合併成 `n_bands` 個頻帶：
+The power spectrum between 0 Hz and `fmax_hz` is pooled into `n_bands` bands:
 
-- `linear`：等寬頻帶（預設 40 個，每個 200 Hz）。每個 FFT bin 依它落在頻帶內的寬度比例加權，每一列的權重和為 1，所以頻帶值是平均功率；頻帶比 bin 還窄時也不會出現空列。
-- `mel`：`speechdsp.mel_filterbank` 的三角形 mel 濾波器（Stevens et al., 1937；Davis & Mermelstein, 1980），低頻解析度較高。
+- `linear`: equal-width bands (40 by default, 200 Hz each). Each FFT bin is weighted by the fraction of its width that falls inside a band, and every row of weights sums to 1, so a band value is a mean power. No row is ever empty, even when a band is narrower than a bin.
+- `mel`: the triangular mel filters of `speechdsp.mel_filterbank` (Stevens et al., 1937; Davis & Mermelstein, 1980), with finer resolution at low frequencies.
 
-接著以片段自己的峰值為基準換成 dB（`speechdsp.power_to_db`），並以 `top_db` 截底：
+The bands are then converted to dB relative to the segment's own peak (`speechdsp.power_to_db`) and floored at `top_db`:
 
 $$L = \max\!\left(10 \log_{10} \frac{E}{E_{\max}},\; -\mathrm{top\_db}\right),$$
 
-音框數不等於 `n_frames` 時沿時間軸線性內插（剛好 98 個音框時不變），最後線性量化成灰階值
+interpolated linearly along time when the number of frames differs from `n_frames` (with exactly 98 frames there is nothing to interpolate), and finally quantized linearly to grey levels
 
 $$g = \mathrm{round}\!\left(255 \cdot \frac{L + \mathrm{top\_db}}{\mathrm{top\_db}}\right) \in \{0, \dots, 255\}.$$
 
-影像第 0 列是最低頻帶、第 0 欄是最早的音框；255 是片段的頻譜峰值，0 是峰值以下 `top_db` dB，中間是線性對應。一個灰階等於 `top_db`／255 dB（預設約 0.31 dB），所以灰階值可以換算回 dB，只有被截底的部分無法還原。這一步沒有任何亂數，同樣的訊號與設定一定得到同一張影像。dB 的下限是相對於峰值，所以小聲的錄音與大聲的錄音得到相同的影像；全靜音的片段（例如補零的部分）是全黑。
+Row 0 of the image is the lowest band and column 0 the earliest frame. Grey level 255 is the segment's spectral peak, 0 lies `top_db` dB below it, and the mapping in between is linear. One grey level is `top_db`/255 dB (about 0.31 dB by default), so grey values convert back to dB; only what fell below the floor is lost. Nothing in this step is random, so the same signal and settings always give the same image. Because the dB floor is relative to the peak, a recording gives the same image whether it is quiet or loud, and an all-silent segment (zero padding, for example) is all black.
 
-| 設定鍵 | 預設 | 作用 |
+| Key | Default | Effect |
 | --- | --- | --- |
-| `spectrogram.scale` | `linear` | `linear` 或 `mel` |
-| `spectrogram.n_bands` | `40` | 影像列數（頻帶數） |
-| `spectrogram.n_frames` | `98` | 影像欄數（音框數） |
-| `spectrogram.fmax_hz` | `8000.0` | 最高頻帶的上緣（Hz），不可超過取樣率的一半 |
-| `spectrogram.top_db` | `80.0` | 動態範圍：灰階 0 對應峰值以下幾 dB |
+| `spectrogram.scale` | `linear` | `linear` or `mel` |
+| `spectrogram.n_bands` | `40` | Image rows (number of bands) |
+| `spectrogram.n_frames` | `98` | Image columns (number of frames) |
+| `spectrogram.fmax_hz` | `8000.0` | Upper edge of the highest band (Hz); must not exceed half the sample rate |
+| `spectrogram.top_db` | `80.0` | Dynamic range: grey level 0 sits this many dB below the peak |
 
-### 4. 頻譜圖 CNN
+### 4. Spectrogram CNN
 
-輸入表示沿用小型關鍵詞辨識（keyword spotting）的作法：40 個頻帶、25 ms 音框、10 ms 位移的時頻圖（Sainath & Parada, 2015），長度取 1 秒（Warden, 2018）。網路本身是 3 × 3 小卷積核的堆疊（Simonyan & Zisserman, 2015）：六個卷積區塊，「same」補邊，每個區塊後接 batch normalization（Ioffe & Szegedy, 2015）與 ReLU 活化函數（Nair & Hinton, 2010），後四個區塊之前加 dropout（Srivastava et al., 2014）。
+The input representation follows small-footprint keyword spotting: a time-frequency image with 40 bands, 25 ms frames and a 10 ms hop (Sainath & Parada, 2015), 1 second long (Warden, 2018). The network itself is a stack of small 3 × 3 kernels (Simonyan & Zisserman, 2015): six convolution blocks with "same" padding, each followed by batch normalization (Ioffe & Szegedy, 2015) and a ReLU activation (Nair & Hinton, 2010), with dropout (Srivastava et al., 2014) before the last four blocks.
 
-| 區塊 | 通道 | 區塊之後 | 輸出（40 × 98 輸入） |
+| Block | Channels | After the block | Output (40 × 98 input) |
 | --- | --- | --- | --- |
 | 1 | 16 | 2 × 2 max pooling | 16 × 20 × 49 |
-| 2 | 32 | 2 × 2 max pooling，左右各補一欄 | 32 × 10 × 25 |
+| 2 | 32 | 2 × 2 max pooling, one column of padding on each side | 32 × 10 × 25 |
 | 3 | 64 | — | 64 × 10 × 25 |
-| 4 | 64 | 2 × 2 max pooling，左右各補一欄 | 64 × 5 × 13 |
+| 4 | 64 | 2 × 2 max pooling, one column of padding on each side | 64 × 5 × 13 |
 | 5 | 64 | — | 64 × 5 × 13 |
-| 6 | 64 | 沿整個時間軸取最大值 | 64 × 5 × 1 |
+| 6 | 64 | Maximum over the whole time axis | 64 × 5 × 1 |
 
-剩下的 320 個值接全連接層與 softmax，以交叉熵損失函數和 Adam（Kingma & Ba, 2015）訓練（LeCun et al., 1998），可訓練參數共 135,651 個（`parameter_count(3)`）。最後一層沿時間軸取全域最大值，全連接層的輸入大小因此與欄數無關，任何 `spectrogram.n_frames` 設定都能用同一個架構；訓練好的模型只接受訓練時的影像大小。輸入先除以 255，再減去訓練資料的逐像素平均影像；這張平均影像是網路的 buffer，跟權重一起存進 `state_dict`，推論時自動套用。
+The remaining 320 values feed a fully connected layer and a softmax, and the network is trained with cross-entropy loss and Adam (LeCun et al., 1998; Kingma & Ba, 2015). It has 135,651 trainable parameters (`parameter_count(3)`). Because the last block takes a global maximum along time, the input size of the fully connected layer does not depend on the number of columns, and the same architecture works for any `spectrogram.n_frames`; a trained model only accepts the image size it was trained on. Inputs are divided by 255, and the per-pixel mean image of the training data is subtracted. That mean image is registered as a buffer of the network, so it is stored in the `state_dict` together with the weights and applied automatically at inference.
 
-每個 epoch 用固定種子的亂數產生器重新打亂訓練資料，最後不足一批的資料照樣使用；權重初值由 `torch.manual_seed(seed)` 固定。`model.class_weight = balanced` 時，類別 $c$ 的交叉熵權重為 $w_c = N / (K N_c)$（$N$ 為訓練片段數、$K$ 為類別數、$N_c$ 為該類片段數）。預設學習率是 $10^{-3}$、100 個 epoch；要比較其他學習率時，以 `--set model.learning_rate=...` 覆寫即可。
+Every epoch reshuffles the training data with a seeded random generator, and the last, partial batch is kept; `torch.manual_seed(seed)` fixes the initial weights. With `model.class_weight = balanced`, class $c$ gets the cross-entropy weight $w_c = N / (K N_c)$, where $N$ is the number of training segments, $K$ the number of classes and $N_c$ the number of segments in that class. The defaults are a learning rate of $10^{-3}$ and 100 epochs; to try other learning rates, override the default with `--set model.learning_rate=...`.
 
-| 設定鍵 | 預設 | 作用 |
+| Key | Default | Effect |
 | --- | --- | --- |
-| `model.name` | `cnn` | `cnn`（需要 `dl` extra）、`mlp` 或 `logistic` |
-| `model.n_epochs` | `100` | CNN 的訓練回合數；MLP 則是上限，訓練損失連續 10 個回合改善不到 $10^{-4}$ 就提早停止 |
-| `model.learning_rate` | `0.001` | Adam 步長（CNN 與 MLP） |
-| `model.batch_size` | `60` | mini-batch 大小（CNN 與 MLP） |
-| `model.weight_decay` | `0.0001` | L2 懲罰：CNN 的 Adam weight decay、MLP 的 `alpha` |
-| `model.dropout` | `0.2` | 後四個卷積區塊之前的 dropout 機率 |
-| `model.device` | `cpu` | `cpu` 或 `cuda` |
+| `model.name` | `cnn` | `cnn` (needs the `dl` extra), `mlp` or `logistic` |
+| `model.n_epochs` | `100` | Training epochs of the CNN; for the MLP an upper limit, with an early stop once the training loss improves by less than $10^{-4}$ for 10 epochs in a row |
+| `model.learning_rate` | `0.001` | Adam step size (CNN and MLP) |
+| `model.batch_size` | `60` | Mini-batch size (CNN and MLP) |
+| `model.weight_decay` | `0.0001` | L2 penalty: Adam weight decay for the CNN, `alpha` for the MLP |
+| `model.dropout` | `0.2` | Dropout probability before the last four convolution blocks |
+| `model.device` | `cpu` | `cpu` or `cuda` |
 
-### 5. 基線模型與類別不平衡
+### 5. Baselines and class imbalance
 
-沒有安裝 PyTorch 時，整個流程仍可用 scikit-learn 的模型跑完，它們也是 CNN 的比較基準：把 40 × 98 影像攤平成 3,920 維向量，先標準化（可選 PCA 投影），再接以反向傳播訓練的多層感知器（MLP；Rumelhart et al., 1986）或 multinomial logistic regression。所有會從資料學參數的步驟都包在同一個 `Pipeline` 裡，交叉驗證時只在訓練折上擬合。
+Without PyTorch the whole workflow still runs on scikit-learn models, and they double as the baselines the CNN is compared against. The 40 × 98 image is flattened into a 3,920-dimensional vector, standardized (optionally projected with PCA) and passed to a multilayer perceptron trained by backpropagation (MLP; Rumelhart et al., 1986) or to multinomial logistic regression. Every step that learns parameters from data sits in one `Pipeline`, so cross-validation fits it on the training folds only.
 
-`class_weight = balanced` 對 logistic regression 是加權損失；MLP 不支援類別權重，所以在訓練折裡把少數類別的片段隨機重複抽樣（有放回），直到每一類都和最大類一樣多；推論不受影響。
+For logistic regression, `class_weight = balanced` means a weighted loss. The MLP does not support class weights, so inside the training folds the segments of the smaller classes are resampled at random with replacement until every class is as large as the largest one; inference is not affected.
 
-| 設定鍵 | 預設 | 作用 |
+| Key | Default | Effect |
 | --- | --- | --- |
-| `model.class_weight` | `balanced` | `balanced` 或 `null` |
-| `model.hidden_units` | `[128]` | MLP 隱藏層大小 |
-| `model.n_components` | `null` | 先投影到幾個主成分；`null` 表示不投影 |
-| `model.logistic_c` | `1.0` | logistic regression 正規化（regularization）強度的倒數 |
+| `model.class_weight` | `balanced` | `balanced` or `null` |
+| `model.hidden_units` | `[128]` | MLP hidden layer sizes |
+| `model.n_components` | `null` | Number of principal components to project onto first; `null` means no projection |
+| `model.logistic_c` | `1.0` | Inverse regularization strength of logistic regression |
 
-### 6. 分層分組交叉驗證與錄音層級彙整
+### 6. Stratified grouped cross-validation and recording-level pooling
 
-折由 `StratifiedGroupKFold(n_splits, shuffle=True, random_state=seed)` 產生（Kohavi, 1995）：每一折維持類別比例，而同一個 `group`（受試者；索引沒有 `group` 欄時就是錄音本身）的所有片段一定落在同一折。每一折都重新建立模型、只在訓練折上擬合，所以每個片段恰好得到一筆 out-of-fold 預測。
+The folds come from `StratifiedGroupKFold(n_splits, shuffle=True, random_state=seed)` (Kohavi, 1995). Each fold keeps the class proportions, and all segments of one `group` (a subject, or the recording itself when the index has no `group` column) always land in the same fold. Every fold builds a new model and fits it on the training folds only, so each segment gets exactly one out-of-fold prediction.
 
-主要指標是 UAR（Schuller et al., 2009），即各類召回率的平均：
+The main metric is UAR (Schuller et al., 2009), the mean of the per-class recalls:
 
 $$\mathrm{UAR} = \frac{1}{K} \sum_{c=1}^{K} \frac{\mathrm{TP}_c}{\mathrm{TP}_c + \mathrm{FN}_c}.$$
 
-它不會因為一律猜多數類別而變高；三類問題中，隨機猜測的 UAR 約為 1/3。另外回報 accuracy、macro F1 與 one-vs-rest macro ROC-AUC，以及合併所有 out-of-fold 預測後的混淆矩陣與每一類的召回率（sensitivity）、specificity、precision、F1 與樣本數。每折指標的摘要是平均與樣本標準差（`ddof=1`）。
+Predicting the majority class every time does not inflate it; on a three-class problem, random guessing gives a UAR of about 1/3. Accuracy, macro F1 and one-vs-rest macro ROC-AUC are reported as well, along with a confusion matrix of the pooled out-of-fold predictions and, for each class, recall (sensitivity), specificity, precision, F1 and the number of samples. Per-fold metrics are summarized by their mean and sample standard deviation (`ddof=1`).
 
-錄音層級的判斷，是把同一段錄音所有片段的類別機率取平均，再選機率最大的類別：
+The recording-level decision averages the class probabilities of all segments of a recording and picks the most probable class:
 
 $$\bar{p}_r(c) = \frac{1}{|S_r|} \sum_{s \in S_r} p_s(c), \qquad \hat{y}_r = \arg\max_c \bar{p}_r(c).$$
 
-| 設定鍵 | 預設 | 作用 |
+| Key | Default | Effect |
 | --- | --- | --- |
-| `evaluation.n_splits` | `5` | 交叉驗證折數 |
-| `seed` | `0` | 主種子：分折、模型初值、過取樣、合成資料都由它決定 |
+| `evaluation.n_splits` | `5` | Number of cross-validation folds |
+| `seed` | `0` | Master seed: folds, model initialization, oversampling and synthetic data all follow from it |
 
-### 7. 合成資料
+### 7. Synthetic data
 
-`synthesize` 指令與測試使用的合成資料，是以諧波聲源加上 /a/ 的四個共振峰產生的持續母音，分成三種嗓音特質：
+The synthetic data used by the `synthesize` command and the tests are sustained vowels made from a harmonic source and the four formants of /a/, in three voice qualities:
 
-| 類別 | 生成方式 | 在頻譜圖上的痕跡 |
+| Class | How it is generated | What it leaves on the spectrogram |
 | --- | --- | --- |
-| `modal` | 穩定的諧波、適中的頻譜斜率、極低的雜訊 | 清楚的諧波橫紋 |
-| `breathy` | 較陡的頻譜斜率（高次諧波弱）、2 kHz 以上的強氣息雜訊 | 高頻區整片變亮 |
-| `rough` | 4–6 Hz 的音高與音量顫動、基頻 0.5 與 1.5 倍處的次諧波 | 時間方向的週期起伏、多出的頻譜線 |
+| `modal` | Steady harmonics, moderate spectral tilt, very little noise | Clear horizontal harmonic stripes |
+| `breathy` | Steeper spectral tilt (weak upper harmonics), strong breath noise above 2 kHz | The whole high-frequency region lights up |
+| `rough` | 4–6 Hz tremor of pitch and loudness, subharmonics at 0.5 and 1.5 times the fundamental | Periodic ripples along time, extra spectral lines |
 
-我挑這三種特質，是因為它們在頻譜圖上留下的痕跡各不相同；它們只是替代訊號，並不模擬任何臨床病症。每位合成受試者有自己的基頻、共振峰比例與「嚴重度」（`synthetic.severity_range`，0 等於 modal、1 是特質最明顯），輕微的受試者會和 modal 重疊，所以分類不是輕而易舉。同一位受試者的多段錄音共用這些參數（只有基頻每段錄音在 ±3% 內各自變動），交叉驗證若不依受試者分組，測試折裡就會出現訓練時已經聽過的聲音。錄音輪流使用不同取樣率（預設 22,050 與 24,000 Hz），頭尾各有一小段近乎無聲的訊號，重取樣與去除靜音因此都會實際跑到。預設各類人數是 8／10／20，刻意不平衡。所有亂數都來自同一個產生器，所以同一個種子寫出的檔案逐位元組相同。
+I picked these three qualities because each leaves a different trace on the spectrogram. They are stand-in signals and do not model any clinical condition. Every synthetic speaker has their own fundamental frequency, formant scaling and "severity" (`synthetic.severity_range`; 0 gives a modal voice, 1 the most pronounced quality), and mild speakers overlap with modal ones, so the classification is not trivial. A speaker's recordings share these parameters (only the fundamental varies, within ±3% for each recording), so cross-validation that did not group by speaker would put voices already heard in training into the test fold. Recordings alternate between sample rates (22,050 and 24,000 Hz by default) and start and end with a short stretch of near-silence, so the resampling and silence-trimming code actually gets exercised. The default class sizes are 8 / 10 / 20 speakers, imbalanced on purpose. All randomness comes from one generator, so the same seed writes byte-identical files.
 
-| 設定鍵 | 預設 | 作用 |
+| Key | Default | Effect |
 | --- | --- | --- |
-| `synthetic.class_names` | `[breathy, modal, rough]` | 要合成的嗓音特質（至少兩類） |
-| `synthetic.n_speakers_per_class` | `[8, 10, 20]` | 各類的合成受試者人數，順序同 `class_names` |
-| `synthetic.n_recordings_per_speaker` | `2` | 每位受試者的錄音數（同一位受試者的錄音必在同一折） |
-| `synthetic.severity_range` | `[0.2, 1.0]` | 非 modal 受試者的嚴重度範圍：0 等於 modal，1 是特質最明顯 |
-| `synthetic.duration_s` | `2.5` | 有聲部分的長度（秒） |
-| `synthetic.silence_s` | `0.25` | 頭尾近乎無聲部分的長度（秒） |
-| `synthetic.sample_rates` | `[22050, 24000]` | 輪流使用的取樣率（Hz） |
+| `synthetic.class_names` | `[breathy, modal, rough]` | Voice qualities to synthesize (at least two) |
+| `synthetic.n_speakers_per_class` | `[8, 10, 20]` | Synthetic speakers per class, in the order of `class_names` |
+| `synthetic.n_recordings_per_speaker` | `2` | Recordings per speaker (a speaker's recordings always share a fold) |
+| `synthetic.severity_range` | `[0.2, 1.0]` | Severity range of non-modal speakers: 0 gives a modal voice, 1 the most pronounced quality |
+| `synthetic.duration_s` | `2.5` | Length of the voiced part (seconds) |
+| `synthetic.silence_s` | `0.25` | Length of the near-silent parts at the start and end (seconds) |
+| `synthetic.sample_rates` | `[22050, 24000]` | Sample rates the recordings alternate between (Hz) |
 
 ---
 
-## 安裝步驟
+## Installation
 
-需要 Python 3.10 以上。
+Requires Python 3.10 or later.
 
 ```bash
 git clone https://github.com/recklight/voice-spectral-classifier.git
 cd voice-spectral-classifier
 python -m venv .venv
 # Windows: .venv\Scripts\activate    Linux/macOS: source .venv/bin/activate
-pip install -e .                 # 核心（會一併從 PyPI 安裝 speechdsp）
-pip install -e ".[dl]"           # PyTorch 模型（選用）
-pip install -e ".[dev]"          # 開發工具：pytest、ruff
+pip install -e .                 # core (also installs speechdsp from PyPI)
+pip install -e ".[dl]"           # PyTorch models (optional)
+pip install -e ".[dev]"          # development tools: pytest, ruff
 ```
 
-PyTorch 只有 CNN 用得到。沒有安裝 `dl` extra 時，合成資料、前處理、MLP 與 logistic regression 的交叉驗證、訓練與推論、圖表都能照常使用。預設的 `model.name` 是 `cnn`，這時錯誤訊息會提示在專案資料夾內執行 `pip install -e ".[dl]"`（或直接 `pip install torch`）；不想裝 PyTorch 就加上 `--set model.name=mlp`，`configs/quick_demo.yaml` 已經這樣設定。
+Only the CNN needs PyTorch. Without the `dl` extra you can still generate synthetic data, preprocess, cross-validate, train and predict with the MLP and logistic regression, and draw the figures. The default `model.name` is `cnn`, so running without PyTorch gives an error that tells you to run `pip install -e ".[dl]"` in the project folder (or plain `pip install torch`). To do without PyTorch, add `--set model.name=mlp`; `configs/quick_demo.yaml` already sets it.
 
-套件本身也可以不安裝，在專案資料夾內以 `PYTHONPATH=src python -m voice_spectral_classifier --help` 直接執行。
+The package also runs without being installed: from the project folder, `PYTHONPATH=src python -m voice_spectral_classifier --help`.
 
 ---
 
-## 快速開始
+## Quick start
 
-不需要任何資料，以下指令會先產生合成資料集。
+No data needed; the commands below start by generating a synthetic dataset.
 
 ```bash
-# 1. 產生合成資料集
+# 1. Generate a synthetic dataset
 voice-spectral-classifier synthesize --config configs/quick_demo.yaml --out data/synthetic
-# 2. 由資料集索引準備模型輸入
+# 2. Prepare model inputs from the dataset index
 voice-spectral-classifier prepare --config configs/quick_demo.yaml --out outputs/demo/prepare
-# 3. 交叉驗證
+# 3. Cross-validate
 voice-spectral-classifier evaluate outputs/demo/prepare/features.npz --config configs/quick_demo.yaml --out outputs/demo/evaluate
-# 4. 以全部資料訓練
+# 4. Train on all the data
 voice-spectral-classifier train outputs/demo/prepare/features.npz --config configs/quick_demo.yaml --out outputs/demo/train
-# 5. 對新的輸入檔推論
+# 5. Predict on a new input file
 voice-spectral-classifier predict data/synthetic/rough/rough_000.wav --model outputs/demo/train/model.joblib --out outputs/demo/predict
 ```
 
-或一次跑完整個流程：`python examples/end_to_end_synthetic.py`。
+Or run the whole workflow at once: `python examples/end_to_end_synthetic.py`.
 
-> 這份合成資料只有 18 段錄音，用來確認每個指令都跑得通；跑出來的分數不代表真實資料上的表現。
+> This synthetic set has only 18 recordings and is there to check that every command runs; the scores it produces say nothing about performance on real data.
 
 ---
 
-## 使用範例
+## Usage examples
 
 ### CLI
 
 ```bash
-# 1. 由 <資料夾>/<類別>/<檔案>.wav 的結構產生資料集索引（之後可手動編輯 group 欄）
+# 1. Build the dataset index from a <folder>/<class>/<file>.wav layout (the group column can be edited by hand afterwards)
 voice-spectral-classifier index data/voices
-# 2. 切段並計算頻譜圖；這裡用 mel 頻帶
+# 2. Segment and compute spectrograms, here with mel bands
 voice-spectral-classifier prepare --dataset data/voices/dataset.csv --set spectrogram.scale=mel --out outputs/voices/prepare
-# 3. 5 折交叉驗證 CNN（需要 dl extra）；特徵設定必須與 prepare 相同
+# 3. 5-fold cross-validation of the CNN (needs the dl extra); feature settings must match prepare
 voice-spectral-classifier evaluate outputs/voices/prepare/features.npz --set spectrogram.scale=mel --seed 1 --out outputs/voices/evaluate
-# 4. 換成 MLP 基線、關掉類別平衡，做對照
+# 4. For comparison, switch to the MLP baseline and turn class balancing off
 voice-spectral-classifier evaluate outputs/voices/prepare/features.npz --set spectrogram.scale=mel --set model.name=mlp --set model.class_weight=null --out outputs/voices/mlp
-# 5. 以全部資料訓練並存檔
+# 5. Train on all the data and save the model
 voice-spectral-classifier train outputs/voices/prepare/features.npz --set spectrogram.scale=mel --out outputs/voices/train
-# 6. 推論新的錄音：同時寫出逐片段與逐錄音的結果
+# 6. Predict on new recordings: writes per-segment and per-recording results
 voice-spectral-classifier predict new/visit_01.wav new/visit_02.wav --model outputs/voices/train/model.pt --out outputs/voices/predict
 ```
 
-上面的 `prepare`、`evaluate` 與 `train` 都得各寫一次 `--set spectrogram.scale=mel`。固定不變的設定可以寫進自己的 YAML（例如只列出與預設不同的鍵的 `configs/my_study.yaml`），再以 `--config` 指定。
+`prepare`, `evaluate` and `train` above each need their own `--set spectrogram.scale=mel`. Settings that stay fixed can go into a YAML file of your own (for example a `configs/my_study.yaml` that lists only the keys differing from the defaults), passed with `--config`.
 
 ### Python API
 
@@ -281,144 +283,147 @@ from voice_spectral_classifier import (
     write_synthetic_dataset,
 )
 
-# 1. 低階函式：1.1 kHz 正弦波的 40 × 98 頻譜圖，最亮的列是 1000–1200 Hz 的第 5 個頻帶
+# 1. Low-level function: the 40 × 98 spectrogram of a 1.1 kHz sine; the brightest row is band 5, 1000–1200 Hz
 t = np.arange(16_000) / 16_000
 image = spectrogram_image(np.sin(2 * np.pi * 1100 * t), 16_000)
 print(image.shape, image.dtype, image.mean(axis=1).argmax())  # (40, 98) uint8 5
 
-# 2. 設定：讀快速示範的設定，再以點號鍵覆寫（換成 mel 頻帶與 logistic regression）
+# 2. Configuration: read the quick-demo settings, then override dotted keys (mel bands and logistic regression)
 config = Config.from_yaml("configs/quick_demo.yaml").override(
     {"spectrogram.scale": "mel", "model.name": "logistic"}
 )
 
-# 3. 合成資料 → 片段影像
+# 3. Synthetic data → segment images
 index = write_synthetic_dataset("data/synthetic", config.synthetic, rng=config.seed)
 features = prepare_features(index, config)
 print(features.n_items, features.image_shape)  # 36 (40, 98)
 
-# 4. 分組交叉驗證：片段層級與錄音層級的 UAR（3 折的平均 ± 樣本標準差）
+# 4. Grouped cross-validation: segment-level and recording-level UAR (mean ± sample standard deviation over 3 folds)
 result = cross_validate(features, config)
 for level in (result.metrics, result.metrics["recordings"]):
     uar = level["summary"]["uar"]
-    print(f"{uar['mean']:.3f} +/- {uar['std']:.3f}")  # 0.722 +/- 0.096，接著 0.778 +/- 0.096
+    print(f"{uar['mean']:.3f} +/- {uar['std']:.3f}")  # 0.722 +/- 0.096, then 0.778 +/- 0.096
 print(result.predictions.columns.tolist())  # path, segment, group, fold, label, predicted, score_<class>
 
-# 5. 訓練、存檔、讀回並推論
+# 5. Train, save, load back and predict
 model_path = save_model("outputs/model.joblib", train_model(features, config), config)
 bundle = load_model(model_path)
 table = predict_inputs(["data/synthetic/rough/rough_000.wav"], bundle)
-print(table[["segment", "predicted"]])  # 每個片段一列
+print(table[["segment", "predicted"]])  # one row per segment
 ```
 
-### 範例腳本
+### Example scripts
 
-| 腳本 | 示範什麼 | 執行時間 |
+| Script | What it shows | Run time |
 | --- | --- | --- |
-| `examples/end_to_end_synthetic.py` | 合成資料 → 頻譜圖 → 交叉驗證 → 訓練存檔 → 讀回推論，全部經由公開 API | 約 20 秒（`--quick` 約 3 秒） |
-| `examples/compare_spectrogram_scales.py` | 同一份資料以 `linear` 與 `mel` 頻譜圖分別交叉驗證 logistic regression、MLP（有 PyTorch 時加上 CNN），寫出比較表與長條圖 | 約 30 秒（`--quick` 約 3 秒） |
-| `examples/aggregate_segment_scores.py` | 每段錄音只留一個片段與保留全部片段的對照，以及片段層級與錄音層級分數的差別；預設資料上，只留一個片段時 UAR 為 0.795 ± 0.109，保留全部片段為 0.833 ± 0.054（錄音層級 0.837 ± 0.099） | 約 25 秒（`--quick` 約 3 秒） |
+| `examples/end_to_end_synthetic.py` | Synthetic data → spectrograms → cross-validation → training and saving → loading back and predicting, all through the public API | About 20 s (`--quick` about 3 s) |
+| `examples/compare_spectrogram_scales.py` | Cross-validates logistic regression and the MLP (plus the CNN when PyTorch is installed) on `linear` and on `mel` spectrograms of the same data, and writes a comparison table and bar chart | About 30 s (`--quick` about 3 s) |
+| `examples/aggregate_segment_scores.py` | One segment per recording against all segments, and how segment-level and recording-level scores differ; on the default data, one segment gives a UAR of 0.795 ± 0.109 and all segments 0.833 ± 0.054 (0.837 ± 0.099 at recording level) | About 25 s (`--quick` about 3 s) |
 
-每支腳本都接受 `--out`、`--seed` 與 `--quick`，預設輸出到 `examples/output/<腳本名稱>/`。
+Every script accepts `--out`, `--seed` and `--quick`, and writes to `examples/output/<script name>/` by default.
 
 ---
 
-## CLI 指令對照表
+## CLI reference
 
-| 指令 | 用途 | 主要輸入 | 主要輸出 |
+| Command | Purpose | Main input | Main output |
 | --- | --- | --- | --- |
-| `synthesize` | 寫出與真實資料相同格式的合成資料集 | 設定 | `<out>/<類別>/<類別>_<NNN>.wav`、`dataset.csv` |
-| `index` | 由 `<資料夾>/<類別>/<檔案>.wav` 產生資料集索引 | 資料夾 | `<資料夾>/dataset.csv` |
-| `prepare` | 讀資料集索引、切段、計算頻譜圖 | `dataset.csv` | `features.npz`、`items.csv`、`class_spectrograms.*` |
-| `evaluate` | 分層、分組的 k 折交叉驗證 | `features.npz` | `metrics.json`、`folds.csv`、`predictions.csv`、`recording_predictions.csv`、混淆矩陣圖表 |
-| `train` | 以全部片段訓練一次並存檔 | `features.npz` | `model.pt`（CNN）或 `model.joblib` |
-| `predict` | 以模型檔推論新的錄音，只用模型檔裡的設定 | WAV 檔、模型檔 | `predictions.csv`、`recording_predictions.csv` |
+| `synthesize` | Writes a synthetic dataset in the same format as real data | Configuration | `<out>/<class>/<class>_<NNN>.wav`, `dataset.csv` |
+| `index` | Builds a dataset index from `<folder>/<class>/<file>.wav` | Folder | `<folder>/dataset.csv` |
+| `prepare` | Reads the dataset index, segments the recordings, computes spectrograms | `dataset.csv` | `features.npz`, `items.csv`, `class_spectrograms.*` |
+| `evaluate` | Stratified, grouped k-fold cross-validation | `features.npz` | `metrics.json`, `folds.csv`, `predictions.csv`, `recording_predictions.csv`, confusion-matrix figures |
+| `train` | Trains once on all segments and saves the model | `features.npz` | `model.pt` (CNN) or `model.joblib` |
+| `predict` | Classifies new recordings with a model file, using only the settings stored in it | WAV files, model file | `predictions.csv`, `recording_predictions.csv` |
 
-| 選項 | 適用指令 | 說明 |
+| Option | Commands | Description |
 | --- | --- | --- |
-| `--log-level LEVEL` | 全域（寫在子命令之前） | `DEBUG`、`INFO`（預設）、`WARNING` 或 `ERROR`；記錄輸出到 stderr |
-| `--version` | 全域 | 顯示版本後結束 |
-| `--config/-c PATH` | `synthesize`、`prepare`、`evaluate`、`train` | YAML 設定檔；沒給時使用預設值 |
-| `--set/-s KEY=VALUE` | 同上 | 覆寫一個設定，例如 `--set model.name=mlp`；可重複 |
-| `--seed INT` | `synthesize`、`evaluate`、`train` | 等同 `--set seed=INT` |
-| `--dataset/-d PATH` | `prepare` | 等同 `--set data.dataset=PATH` |
-| `--out/-o PATH` | `synthesize`、`prepare`、`evaluate`、`train`、`predict` | 輸出資料夾，不存在時自動建立；沒給時在 `output.root` 底下建立 `<指令>_<UTC 時間>`（`synthesize` 預設為 `data/synthetic`）。`index` 沒有這個選項，一律寫到 `<資料夾>/dataset.csv` |
-| `--model/-m PATH` | `predict` | `train` 寫出的模型檔（必填） |
-| `--figures/--no-figures` | `prepare` | 是否畫出各類平均頻譜圖（預設會畫） |
+| `--log-level LEVEL` | Global (before the subcommand) | `DEBUG`, `INFO` (default), `WARNING` or `ERROR`; log output goes to stderr |
+| `--version` | Global | Show the version and exit |
+| `--config/-c PATH` | `synthesize`, `prepare`, `evaluate`, `train` | YAML configuration file; the defaults apply when it is not given |
+| `--set/-s KEY=VALUE` | Same as above | Override one setting, for example `--set model.name=mlp`; repeatable |
+| `--seed INT` | `synthesize`, `evaluate`, `train` | Same as `--set seed=INT` |
+| `--dataset/-d PATH` | `prepare` | Same as `--set data.dataset=PATH` |
+| `--out/-o PATH` | `synthesize`, `prepare`, `evaluate`, `train`, `predict` | Output folder, created if it does not exist; when not given, a `<command>_<UTC time>` folder under `output.root` (`synthesize` defaults to `data/synthetic`). `index` has no such option and always writes `<folder>/dataset.csv` |
+| `--model/-m PATH` | `predict` | Model file written by `train` (required) |
+| `--figures/--no-figures` | `prepare` | Whether to plot the mean spectrogram of each class (on by default) |
 
-除了 `index`，每個指令都會在輸出資料夾另外寫出 `config.yaml` 與 `manifest.json`，事後查得到這次用了哪些設定和輸入檔。
+Every command except `index` also writes `config.yaml` and `manifest.json` to the output folder, so you can later look up which settings and input files a run used.
 
-exit code：`0` 表示成功；`2` 表示輸入或設定有誤（只印一行 `error: ...`，加上 `--log-level DEBUG` 可看到完整的 traceback）；`1` 表示被中斷或程式本身的錯誤。
+Exit codes: `0` means success; `2` means a problem with the input or the configuration (a single `error: ...` line is printed; add `--log-level DEBUG` to see the full traceback); `1` means an interruption or a bug in the program itself.
 
 ---
 
-## 專案結構
+## Project structure
 
 ```text
 voice-spectral-classifier/
 ├── .github/
 │   ├── ISSUE_TEMPLATE/
-│   │   ├── bug_report.yml               # 錯誤回報表單
-│   │   ├── config.yml                   # 停用空白 issue
-│   │   └── feature_request.yml          # 功能建議表單
+│   │   ├── bug_report.yml               # bug report form
+│   │   ├── config.yml                   # turns off blank issues
+│   │   └── feature_request.yml          # feature request form
 │   └── workflows/
-│       └── ci.yml                       # lint、3.10 語法閘門、Linux／Windows × Python 3.10–3.13、最舊相依版本、PyTorch
+│       └── ci.yml                       # lint, 3.10 syntax gate, Linux/Windows × Python 3.10–3.13, oldest dependencies, PyTorch
 ├── configs/
-│   ├── default.yaml                     # 與 Config() 完全相同，逐鍵附註解
-│   └── quick_demo.yaml                  # 小型合成資料與 MLP，幾秒內跑完
+│   ├── default.yaml                     # identical to Config(), with a comment on every key
+│   └── quick_demo.yaml                  # small synthetic set and MLP, done in seconds
 ├── data/
-│   └── .gitkeep                         # 資料的預設位置，內容不進版控
+│   └── .gitkeep                         # default place for data; its contents stay out of git
 ├── outputs/
-│   └── .gitkeep                         # 執行資料夾的預設根目錄，內容不進版控
+│   └── .gitkeep                         # default root of the run folders; its contents stay out of git
 ├── docs/
-│   ├── images/workflow.png              # README 的流程圖
-│   └── workflow.html                    # 互動式流程圖（瀏覽器開啟）
+│   ├── images/workflow.png              # workflow diagram shown in README.md
+│   ├── images/workflow.zh-TW.png        # the same diagram in Traditional Chinese
+│   ├── workflow.html                    # interactive workflow diagram (open in a browser)
+│   └── workflow.zh-TW.html              # the interactive diagram in Traditional Chinese
 ├── examples/
-│   ├── end_to_end_synthetic.py          # 端到端流程
-│   ├── compare_spectrogram_scales.py    # linear 與 mel 頻譜圖、各模型的比較
-│   └── aggregate_segment_scores.py      # 片段層級與錄音層級分數的對照
+│   ├── end_to_end_synthetic.py          # end-to-end workflow
+│   ├── compare_spectrogram_scales.py    # linear vs mel spectrograms across the models
+│   └── aggregate_segment_scores.py      # segment-level vs recording-level scores
 ├── src/
 │   └── voice_spectral_classifier/
-│       ├── __init__.py                  # 公開 API
+│       ├── __init__.py                  # public API
 │       ├── __main__.py                  # python -m voice_spectral_classifier
-│       ├── py.typed                     # 型別資訊標記
-│       ├── cli.py                       # typer 命令列
-│       ├── config.py                    # 設定 dataclass 與 YAML 讀寫
-│       ├── errors.py                    # 例外類別
-│       ├── logging_utils.py             # logging 設定
-│       ├── manifest.py                  # 執行資料夾與 manifest.json
-│       ├── dataset.py                   # dataset.csv 與 features.npz
-│       ├── synthetic.py                 # 合成持續母音
-│       ├── segmentation.py              # 重取樣、去除靜音、固定長度切段
-│       ├── spectrogram.py               # 功率譜密度、頻帶網格、8 位元量化
-│       ├── cnn.py                       # 頻譜圖 CNN（延遲匯入 PyTorch）
-│       ├── models.py                    # 模型註冊表、類別平衡、模型檔
-│       ├── pipeline.py                  # prepare／train／predict 高階函式
-│       ├── evaluation.py                # 分組交叉驗證與指標
-│       └── figures.py                   # 混淆矩陣、各類平均頻譜圖與對應表格
-├── tests/                               # 各模組都有對應的測試，另有 CLI、範例、3.10 相容性與文件檢查
+│       ├── py.typed                     # marks the package as typed
+│       ├── cli.py                       # typer command line
+│       ├── config.py                    # configuration dataclasses, YAML reading and writing
+│       ├── errors.py                    # exception classes
+│       ├── logging_utils.py             # logging setup
+│       ├── manifest.py                  # run folders and manifest.json
+│       ├── dataset.py                   # dataset.csv and features.npz
+│       ├── synthetic.py                 # synthetic sustained vowels
+│       ├── segmentation.py              # resampling, silence trimming, fixed-length segmentation
+│       ├── spectrogram.py               # power spectral density, band grid, 8-bit quantization
+│       ├── cnn.py                       # spectrogram CNN (imports PyTorch lazily)
+│       ├── models.py                    # model registry, class balancing, model files
+│       ├── pipeline.py                  # prepare/train/predict high-level functions
+│       ├── evaluation.py                # grouped cross-validation and metrics
+│       └── figures.py                   # confusion matrices, mean class spectrograms and their tables
+├── tests/                               # tests for every module, plus CLI, example, 3.10 compatibility and documentation checks
 ├── .gitattributes
 ├── .gitignore
 ├── CHANGELOG.md
 ├── CITATION.cff
 ├── CONTRIBUTING.md
 ├── LICENSE
-├── README.md
+├── README.md                            # English
+├── README.zh-TW.md                      # Traditional Chinese
 └── pyproject.toml
 ```
 
 ---
 
-## 資料準備
+## Data preparation
 
-**本專案不附任何資料。** repository 裡沒有錄音、頻譜圖影像或模型檔，測試與範例只用程式合成的資料。請自行準備錄音，並把 `data.dataset`（或 `--dataset`）指向你的資料集索引。
+**No data comes with this project.** The repository holds no recordings, spectrogram images or model files, and the tests and examples use only data the code synthesizes. Prepare your own recordings and point `data.dataset` (or `--dataset`) at your dataset index.
 
-### 1. 資料集索引 dataset.csv
+### 1. Dataset index (dataset.csv)
 
-| 欄位 | 必要 | 說明 |
+| Column | Required | Description |
 | --- | --- | --- |
-| `path` | 是 | WAV 檔路徑，相對於 `dataset.csv` 所在的資料夾，以 `/` 分隔（`\` 也接受） |
-| `label` | 是 | 類別名稱，例如 `neoplasm`、`phonotrauma`、`palsy`；類別順序一律依字母排序 |
-| `group` | 否 | 受試者代號。同一位受試者的所有錄音一定在同一折；沒有這一欄時，每段錄音自成一組 |
+| `path` | Yes | WAV file path, relative to the folder that holds `dataset.csv`, separated by `/` (`\` is accepted too) |
+| `label` | Yes | Class name, for example `neoplasm`, `phonotrauma`, `palsy`; classes are always in alphabetical order |
+| `group` | No | Subject code. All recordings of one subject always fall in the same fold; without this column, each recording is a group of its own |
 
 ```csv
 path,label,group
@@ -428,46 +433,46 @@ palsy/case_0002_b.wav,palsy,case_0002
 phonotrauma/case_0003.wav,phonotrauma,case_0003
 ```
 
-檔名不承載任何意義，標籤與分組只從欄位讀取。若錄音已經依類別放在子資料夾，`voice-spectral-classifier index <資料夾>` 會寫出一份 `dataset.csv`（每段錄音一組），再依需要編輯 `group` 欄即可。索引列出的檔案若不存在，程式會列出前 5 個找不到的路徑並停止。
+File names carry no meaning; labels and groups are read from the columns only. If the recordings already sit in one sub-folder per class, `voice-spectral-classifier index <folder>` writes a `dataset.csv` (one group per recording); then edit the `group` column as needed. If files listed in the index do not exist, the program lists the first 5 missing paths and stops.
 
-### 2. 檔案格式
+### 2. File format
 
-| 項目 | 要求與處理方式 |
+| Item | Requirement and handling |
 | --- | --- |
-| 容器 | RIFF／WAVE；8、16、32 位元整數或浮點 PCM 都可以 |
-| 聲道 | 多聲道會平均成單聲道 |
-| 取樣率 | 任意；一律重取樣到 `segmentation.sample_rate`（預設 16 kHz） |
-| 長度 | 至少要有 `min_fraction` × `segment_s`（預設 0.5 秒）的有聲部分；更短的錄音會被略過並記錄警告 |
-| 數值 | 浮點 WAV 裡只要有一個 NaN 或無限大的樣本，程式就指出檔名並停止 |
-| 內容 | 持續母音（例如 /a/）最理想；本流程不處理連續語句的斷詞 |
+| Container | RIFF/WAVE; 8-, 16- or 32-bit integer or floating-point PCM |
+| Channels | Multichannel audio is averaged to mono |
+| Sample rate | Any; always resampled to `segmentation.sample_rate` (16 kHz by default) |
+| Length | At least `min_fraction` × `segment_s` (0.5 seconds by default) of voiced signal; shorter recordings are skipped with a logged warning |
+| Values | A single NaN or infinite sample in a floating-point WAV stops the program, and the error names the file |
+| Content | Sustained vowels (such as /a/) work best; the pipeline does not split continuous speech into words |
 
-### 3. 公開資料集
+### 3. Public dataset
 
-FEMH Voice Data Challenge 2018（IEEE BigData 2018 的競賽資料）含有 neoplasm、phonotrauma 與 vocal palsy 等類別的持續母音錄音，需向主辦單位申請使用。取得後依上述格式建立 `dataset.csv` 即可套用本流程。本專案不包含也不散布該資料集。
+The FEMH Voice Data Challenge 2018, held at IEEE BigData 2018, provides sustained-vowel recordings in classes such as neoplasm, phonotrauma and vocal palsy; access has to be requested from the organizers. Once you have it, build a `dataset.csv` in the format above and the pipeline runs on it as is. This project neither includes nor distributes that dataset.
 
 ---
 
-## 設定檔
+## Configuration files
 
-- `configs/default.yaml`：與 `Config()` 完全相同，每個鍵都附英文註解，適合複製後修改。
-- `configs/quick_demo.yaml`：只列與預設不同的鍵（小型合成資料、MLP、3 折），讓「快速開始」幾秒內跑完；`data.dataset` 指向 `data/synthetic/dataset.csv`。
+- `configs/default.yaml`: identical to `Config()`, with a comment on every key; copy it as a starting point.
+- `configs/quick_demo.yaml`: lists only the keys that differ from the defaults (a small synthetic set, MLP, 3 folds), so the quick start finishes in seconds; `data.dataset` points to `data/synthetic/dataset.csv`.
 
-程式不會自動載入任何設定檔：沒給 `--config` 時使用預設值。設定裡的相對路徑以目前的工作目錄為基準。
+No configuration file is loaded automatically: without `--config`, the defaults apply. Relative paths in a configuration are resolved against the current working directory.
 
-| 區段 | 重要欄位 | 說明 |
+| Section | Key fields | Description |
 | --- | --- | --- |
-| （頂層） | `seed` | 主種子 |
-| `data` | `dataset` | 資料集索引（預設為佔位值 `data/dataset.csv`） |
-| `synthetic` | `class_names`、`n_speakers_per_class`、`n_recordings_per_speaker`、`severity_range`、`duration_s`、`silence_s`、`sample_rates` | 合成資料的大小與生成參數 |
-| `segmentation` | `sample_rate`、`trim_silence`、`segment_s`、`hop_s`、`min_fraction`、`max_segments` | 重取樣、去除靜音與切段 |
-| `spectrogram` | `scale`、`n_bands`、`n_frames`、`frame_ms`、`hop_ms`、`n_fft`、`window`、`fmax_hz`、`top_db` | 頻譜圖 |
-| `model` | `name`、`n_epochs`、`learning_rate`、`batch_size`、`weight_decay`、`class_weight`、`dropout`、`hidden_units`、`n_components`、`logistic_c`、`device` | 模型與訓練 |
-| `evaluation` | `n_splits` | 交叉驗證折數 |
-| `output` | `root`、`figure_format`、`dpi` | 執行資料夾的位置與圖檔格式 |
+| (top level) | `seed` | Master seed |
+| `data` | `dataset` | Dataset index (the default is the placeholder `data/dataset.csv`) |
+| `synthetic` | `class_names`, `n_speakers_per_class`, `n_recordings_per_speaker`, `severity_range`, `duration_s`, `silence_s`, `sample_rates` | Size and generation parameters of the synthetic data |
+| `segmentation` | `sample_rate`, `trim_silence`, `segment_s`, `hop_s`, `min_fraction`, `max_segments` | Resampling, silence trimming and segmentation |
+| `spectrogram` | `scale`, `n_bands`, `n_frames`, `frame_ms`, `hop_ms`, `n_fft`, `window`, `fmax_hz`, `top_db` | Spectrograms |
+| `model` | `name`, `n_epochs`, `learning_rate`, `batch_size`, `weight_decay`, `class_weight`, `dropout`, `hidden_units`, `n_components`, `logistic_c`, `device` | Model and training |
+| `evaluation` | `n_splits` | Number of cross-validation folds |
+| `output` | `root`, `figure_format`, `dpi` | Where run folders go and the figure format |
 
-`segmentation` 與 `spectrogram` 決定 `prepare` 的輸出，會存進 `features.npz`；`evaluate` 與 `train` 讀入時若這兩個區段與目前的設定不同，會直接報錯，避免拿不同設定的特徵訓練。`predict` 只使用模型檔裡的設定。
+`segmentation` and `spectrogram` determine what `prepare` produces and are stored in `features.npz`. When `evaluate` or `train` reads the file and these two sections differ from the current configuration, it stops with an error, so a model is never trained on features made with other settings. `predict` uses only the settings in the model file.
 
-未知的鍵、型別不對或不是有限值的數字（例如 `.inf`）都會直接報錯；未知的鍵還會列出合法的鍵，例如：
+Unknown keys, wrong types and non-finite numbers (such as `.inf`) are errors. For an unknown key, the message also lists the valid keys, for example:
 
 ```text
 $ voice-spectral-classifier prepare --set spectrogram.n_band=20
@@ -476,44 +481,44 @@ error: unknown configuration key 'spectrogram.n_band'; valid keys here are ['fma
 
 ---
 
-## 結果與評估指標
+## Results and metrics
 
-一次 `evaluate` 的執行資料夾：
+The run folder that one `evaluate` call writes:
 
 ```text
 outputs/demo/evaluate/
-├── config.yaml                      # 實際使用的完整設定
-├── manifest.json                    # 指令、時間、版本、輸入檔的 SHA-256、種子
-├── metrics.json                     # 每折、摘要與合併後的指標（片段與錄音兩個層級）
-├── folds.csv                        # 每折一列
-├── predictions.csv                  # 每個片段一筆 out-of-fold 預測
-├── recording_predictions.csv        # 每段錄音一筆（片段機率平均）
-├── confusion_matrix.png             # 片段層級的混淆矩陣
-├── confusion_matrix.csv             # 同一張圖的數字
-├── recording_confusion_matrix.png   # 錄音層級的混淆矩陣
+├── config.yaml                      # the full configuration actually used
+├── manifest.json                    # command, time, versions, SHA-256 of the input files, seed
+├── metrics.json                     # per-fold, summary and pooled metrics (segment and recording level)
+├── folds.csv                        # one row per fold
+├── predictions.csv                  # one out-of-fold prediction per segment
+├── recording_predictions.csv        # one per recording (mean of the segment probabilities)
+├── confusion_matrix.png             # segment-level confusion matrix
+├── confusion_matrix.csv             # the numbers behind the same figure
+├── recording_confusion_matrix.png   # recording-level confusion matrix
 └── recording_confusion_matrix.csv
 ```
 
-| 檔案 | 內容 |
+| File | Contents |
 | --- | --- |
-| `metrics.json` | `task`、`n_items`、`n_splits`、`seed`、`folds`、`summary`（每個指標的 `mean` 與 `std`）、`pooled`（含 `classes`、`confusion_matrix`、`per_class`）、`recordings`（以錄音為單位的同樣結構） |
-| `folds.csv` | `fold`、`n_train`、`n_test`、`uar`、`accuracy`、`f1_macro`、`roc_auc_ovr` |
-| `predictions.csv` | `path`、`segment`、`group`、`fold`、`label`、`predicted`、`score_<類別>`，列順序與 `items.csv` 相同 |
-| `recording_predictions.csv` | `path`、`group`、`fold`、`label`、`predicted`、`score_<類別>` |
-| `confusion_matrix.csv` | `label`（真實類別）、`predicted`、`count`、`fraction`（占該真實類別的比例） |
+| `metrics.json` | `task`, `n_items`, `n_splits`, `seed`, `folds`, `summary` (`mean` and `std` of each metric), `pooled` (with `classes`, `confusion_matrix`, `per_class`), `recordings` (the same structure, per recording) |
+| `folds.csv` | `fold`, `n_train`, `n_test`, `uar`, `accuracy`, `f1_macro`, `roc_auc_ovr` |
+| `predictions.csv` | `path`, `segment`, `group`, `fold`, `label`, `predicted`, `score_<class>`, rows in the same order as `items.csv` |
+| `recording_predictions.csv` | `path`, `group`, `fold`, `label`, `predicted`, `score_<class>` |
+| `confusion_matrix.csv` | `label` (true class), `predicted`, `count`, `fraction` (share of that true class) |
 
-| 指標 | 定義 | 為什麼看它 |
+| Metric | Definition | Why it is reported |
 | --- | --- | --- |
-| UAR | 各類召回率的平均 | 類別不平衡時的主要指標；一律猜多數類別只會得到 $1/K$ |
-| accuracy | 預測正確的比例 | 直觀，但會被多數類別主導，只作參考 |
-| `f1_macro` | 各類 F1 的平均 | 同時反映 precision 與 recall |
-| `roc_auc_ovr` | 每一類對其他類的 ROC-AUC 平均 | 不依賴決策門檻，評估機率排序的品質；測試折缺少某一類時記為 `null` |
-| 每類 recall／specificity | 該類被正確找出的比例／其他類沒被誤判成該類的比例 | 即臨床上的 sensitivity 與 specificity（one-vs-rest） |
-| 混淆矩陣 | 列是真實類別、欄是預測類別 | 看錯誤集中在哪兩類之間 |
+| UAR | Mean of the per-class recalls | The main metric under class imbalance; always guessing the majority class gets only $1/K$ |
+| accuracy | Fraction of correct predictions | Intuitive, but dominated by the majority class; for reference only |
+| `f1_macro` | Mean of the per-class F1 scores | Reflects precision and recall together |
+| `roc_auc_ovr` | Mean of each class's ROC-AUC against the rest | Independent of the decision threshold, measures how well the probabilities rank; `null` when a test fold lacks a class |
+| Per-class recall / specificity | Share of the class that is found / share of the other classes not mistaken for it | The clinical sensitivity and specificity (one-vs-rest) |
+| Confusion matrix | Rows are true classes, columns predicted classes | Shows which two classes the errors pile up between |
 
-以下數字都是在合成資料上實際執行指令得到的輸出（Windows 11、Python 3.13、scikit-learn 1.7、NumPy 2.3，CNN 用 CPU 版 PyTorch 2.14），平均 ± 樣本標準差，`ddof=1`。換作業系統或套件版本時，末幾位可能略有不同。
+All numbers below come from running these commands on synthetic data (Windows 11, Python 3.13, scikit-learn 1.7, NumPy 2.3; the CNN on the CPU build of PyTorch 2.14) and are given as mean ± sample standard deviation, `ddof=1`. On another operating system or with other package versions, the last digits may differ slightly.
 
-「快速開始」的結果（`quick_demo.yaml`：18 段錄音、36 個片段、MLP、3 折）：
+Quick start results (`quick_demo.yaml`: 18 recordings, 36 segments, MLP, 3 folds):
 
 ```bash
 voice-spectral-classifier synthesize --config configs/quick_demo.yaml --out data/synthetic
@@ -521,20 +526,20 @@ voice-spectral-classifier prepare --config configs/quick_demo.yaml --out outputs
 voice-spectral-classifier evaluate outputs/demo/prepare/features.npz --config configs/quick_demo.yaml --out outputs/demo/evaluate
 ```
 
-| 層級 | 筆數 | UAR | accuracy | macro F1 | ROC-AUC（OvR） |
+| Level | Count | UAR | accuracy | macro F1 | ROC-AUC (OvR) |
 | --- | --- | --- | --- | --- | --- |
-| 片段 | 36 | 0.889 ± 0.096 | 0.889 ± 0.096 | 0.888 ± 0.098 | 0.927 ± 0.079 |
-| 錄音 | 18 | 0.889 ± 0.096 | 0.889 ± 0.096 | 0.888 ± 0.098 | 0.934 ± 0.082 |
+| Segment | 36 | 0.889 ± 0.096 | 0.889 ± 0.096 | 0.888 ± 0.098 | 0.927 ± 0.079 |
+| Recording | 18 | 0.889 ± 0.096 | 0.889 ± 0.096 | 0.888 ± 0.098 | 0.934 ± 0.082 |
 
-片段層級合併後的混淆矩陣（`confusion_matrix.csv`）與每類指標：
+Pooled segment-level confusion matrix (`confusion_matrix.csv`) and per-class metrics:
 
-| 真實＼預測 | breathy | modal | rough | recall | specificity |
+| True \ predicted | breathy | modal | rough | recall | specificity |
 | --- | --- | --- | --- | --- | --- |
 | breathy | 10 | 0 | 0 | 1.000 | 1.000 |
 | modal | 0 | 8 | 2 | 0.800 | 0.923 |
 | rough | 0 | 2 | 14 | 0.875 | 0.900 |
 
-預設大小的合成資料（38 位受試者、76 段錄音、228 個片段，5 折）上，比較頻帶尺度、模型與類別平衡：
+Band scales, models and class balancing compared on the default-size synthetic data (38 speakers, 76 recordings, 228 segments, 5 folds):
 
 ```bash
 voice-spectral-classifier synthesize --out data/synthetic_full
@@ -549,7 +554,7 @@ voice-spectral-classifier evaluate outputs/full/mel/features.npz --set spectrogr
 voice-spectral-classifier evaluate outputs/full/linear/features.npz --set model.name=mlp --set model.class_weight=null --out outputs/full/linear_mlp_unweighted
 ```
 
-| 頻譜圖 | 模型 | `class_weight` | UAR（片段） | accuracy（片段） | UAR（錄音） |
+| Spectrogram | Model | `class_weight` | UAR (segment) | accuracy (segment) | UAR (recording) |
 | --- | --- | --- | --- | --- | --- |
 | `linear` | `cnn` | `balanced` | 0.843 ± 0.080 | 0.807 ± 0.100 | 0.834 ± 0.099 |
 | `linear` | `logistic` | `balanced` | 0.933 ± 0.070 | 0.921 ± 0.072 | 0.933 ± 0.070 |
@@ -559,63 +564,63 @@ voice-spectral-classifier evaluate outputs/full/linear/features.npz --set model.
 | `mel` | `logistic` | `balanced` | 0.841 ± 0.130 | 0.846 ± 0.096 | 0.838 ± 0.134 |
 | `mel` | `mlp` | `balanced` | 0.827 ± 0.112 | 0.840 ± 0.099 | 0.827 ± 0.118 |
 
-這份合成資料的類別差異集中在 2 kHz 以上（氣息雜訊）與基頻附近的細節（次諧波）。logistic regression 用 `linear` 明顯較好（0.933 對 0.841），MLP 兩者差不多，原因可能是等寬頻帶在高頻的解析度比 mel 頻帶好；CNN 則是 `mel` 較好（0.945 對 0.843），也是整張表最高的 UAR。沒有哪一種尺度對每個模型都比較好，真實資料的結論也可能不同，所以兩種尺度都保留。CNN 那兩列需要安裝 `dl` extra。
+In this synthetic data the classes differ mainly above 2 kHz (breath noise) and in the detail around the fundamental (subharmonics). Logistic regression does clearly better with `linear` (0.933 vs 0.841), possibly because equal-width bands resolve the high frequencies better than mel bands do; the MLP scores about the same with either. The CNN does better with `mel` (0.945 vs 0.843), which is also the highest UAR in the table. No scale is better for every model, and real data may lead to a different conclusion, so I kept both scales. The two CNN rows need the `dl` extra.
 
 ---
 
-## 已知限制
+## Known limitations
 
-- 合成母音只用來確認每個環節都正確運作，上面的分數不能拿來推估臨床資料的準確度；請在自己的資料上以分組交叉驗證評估。
-- 這是研究用的程式，沒有經過臨床驗證，不能用於診斷。
-- 模型檔只載入自己信任的來源。`model.joblib` 是 pickle，讀取時可以執行任意程式碼；`model.pt` 以 `weights_only=True` 讀取，風險較低，但同樣建議只用自己訓練的檔案。
-- 受試者很少時，`StratifiedGroupKFold` 不保證每一折都有每一類。缺類的那一折 ROC-AUC 記為 `null`，摘要只平均有定義的折；UAR 只平均這一折實際出現的類別（`speechdsp.uar` 的定義），macro F1 則仍把被預測到、但沒有出現的類別算進去。某類的受試者少於折數時會記錄警告，這時請增加資料或降低 `evaluation.n_splits`。
-- 機率沒有經過校準。MLP 與 CNN 的 softmax 輸出常過度自信，錄音層級平均的也是這些未校準的機率；需要風險分數時請另做校準。
-- 只處理持續母音，片段之間沒有語音內容的對齊；連續語句需要另外做斷句或音素切割。
-- 端點偵測靠錄音開頭估計雜訊。錄音一開始就在發聲時，偵測器會保留整段錄音；已經剪好的 1 秒片段建議設定 `segmentation.trim_silence=false`，以免被裁短。
-
----
-
-## 設計重點
-
-### 評估
-
-- `group` 欄讓同一位受試者（或同一段錄音）的所有片段只出現在一折；同一個人的聲音如果同時出現在訓練折與測試折，分數會偏高。`predictions.csv` 每一列都有所屬的折、真實標籤與預測，事後可以逐筆檢查。
-- 分折、權重初值、每個 epoch 的打亂順序、過取樣與合成資料都由 `seed` 決定。同一個種子在同一個環境重跑，CSV、`metrics.json` 與 `features.npz` 逐位元組相同（測試會比對；`manifest.json` 記有執行時間，每次都不同）。
-
-### 訊號處理與輸入表示
-
-- 每個片段都帶著錄音路徑與序號，錄音層級的分數就是靠路徑把同一段錄音的片段併回去。以 `max_segments` 只留部分片段時，序號仍是它在整段錄音所有片段中的編號。
-- `linear` 與 `mel` 只差在頻帶合併矩陣，其餘分析相同，兩者的比較才公平；在相同的窗函數與音框設定下，mel 版本與 `speechdsp.spectrogram_image` 的差距不超過一個灰階（測試會比對）。
-
-### 模型與資料流程
-
-- CNN 每 10 個 epoch（以及最後一個）以 INFO 記錄一次訓練損失，學習率或 epoch 數不合適時從 log 就看得出來。
-- 模型檔連同完整設定一起存：scikit-learn 模型存成 `model.joblib`，CNN 存成只含張量與基本型別的 `model.pt`。`predict` 只用模型檔裡的設定重新切段與計算頻譜圖，所以訓練與推論的前處理一致。在 GPU 上訓練的 CNN 拿到沒有 CUDA 的電腦上，會記錄警告並在 CPU 上推論。
-- 標籤與分組只從 `dataset.csv` 的 `label` 與 `group` 欄讀取，不從檔名解析，所以檔名可以完全不帶標籤或身分資訊。類別依字母排序，數量就是 `label` 欄實際出現的名稱數；不管索引的列怎麼排，類別編號、混淆矩陣與 `score_<類別>` 欄的順序都一樣。錄音路徑以 `dataset.csv` 所在的資料夾為基準，整個資料夾搬到別處、或從別的工作目錄執行，索引都不用改。
-- 每次執行的輸出集中在一個資料夾，檔名固定，旁邊就是這次的 `config.yaml` 與 `manifest.json`；要比較兩次執行，對照兩個資料夾就好。
-- 資料有問題時（缺欄位、找不到檔案、無法解碼或含 NaN 的 WAV、特徵設定與 `prepare` 不一致），錯誤訊息只有一行，直接指出是哪個檔案、欄位或設定，不必從 traceback 裡找；太短的錄音則略過並記錄警告。
+- The synthetic vowels only confirm that every step works as intended; the scores above cannot be used to estimate accuracy on clinical data. Evaluate on your own data with grouped cross-validation.
+- This is research code. It has not been clinically validated and must not be used for diagnosis.
+- Only load model files from sources you trust. `model.joblib` is a pickle and can run arbitrary code when it is loaded; `model.pt` is read with `weights_only=True`, which is less risky, but the same rule applies: use only files you trained yourself.
+- With few subjects, `StratifiedGroupKFold` does not guarantee every class in every fold. A fold that lacks a class records its ROC-AUC as `null`, and the summary averages only the folds where it is defined. UAR averages only the classes that actually occur in that fold (the definition in `speechdsp.uar`), while macro F1 still counts a class that was predicted but does not occur. A warning is logged when a class has fewer subjects than there are folds; add data or lower `evaluation.n_splits` in that case.
+- Probabilities are not calibrated. The softmax outputs of the MLP and the CNN are often overconfident, and the recording-level average is taken over the same uncalibrated probabilities; calibrate them separately if you need risk scores.
+- Only sustained vowels are handled, and segments are not aligned by speech content; continuous speech needs sentence or phoneme segmentation first.
+- Endpoint detection estimates the noise from the beginning of the recording. When voicing starts right at the beginning, the detector keeps the whole recording; for clips already cut to 1 second, set `segmentation.trim_silence=false` so they are not shortened.
 
 ---
 
-## 開發與測試
+## Design notes
+
+### Evaluation
+
+- The `group` column keeps all segments of one subject (or one recording) in a single fold; when the same person's voice turns up in both the training and the test folds, the scores come out too high. Every row of `predictions.csv` has its fold, true label and prediction, so any single prediction can be checked afterwards.
+- Folds, initial weights, the shuffle order of every epoch, oversampling and synthetic data are all set by `seed`. Rerunning with the same seed in the same environment gives byte-identical CSV files, `metrics.json` and `features.npz` (the tests compare them; `manifest.json` records the run time, so it differs every time).
+
+### Signal processing and input representation
+
+- Every segment carries its recording path and position, and the recording-level scores come from grouping the segments on that path. When `max_segments` keeps only some segments, the position still refers to the segment's place among all segments of the recording.
+- `linear` and `mel` differ only in the band pooling matrix and share the rest of the analysis, which is what makes the comparison fair. With the same window and frame settings, the mel version stays within one grey level of `speechdsp.spectrogram_image` (a test compares them).
+
+### Models and data flow
+
+- The CNN logs its training loss at INFO every 10 epochs (and after the last one), so a poor learning rate or epoch count shows up in the log.
+- Model files are saved together with the full configuration: scikit-learn models as `model.joblib`, the CNN as a `model.pt` that holds only tensors and basic types. `predict` segments the recordings and computes the spectrograms using only the settings in the model file, so training and inference go through the same preprocessing. A CNN trained on a GPU and moved to a machine without CUDA logs a warning and runs inference on the CPU.
+- Labels and groups come only from the `label` and `group` columns of `dataset.csv` and are never parsed from file names, so the file names need not carry any label or identity information. Classes are sorted alphabetically, one per distinct name in the `label` column; however the index rows are ordered, the class indices, the confusion matrix and the `score_<class>` columns always follow that alphabetical order. Recording paths are relative to the folder holding `dataset.csv`, so the index needs no change when the whole folder moves or the commands run from another working directory.
+- Each run writes its output into one folder with fixed file names, next to that run's `config.yaml` and `manifest.json`; comparing two runs means comparing two folders.
+- When something is wrong with the data (a missing column, a missing file, a WAV that cannot be decoded or contains NaN, feature settings that do not match `prepare`), the error is a single line naming the file, column or setting, so there is no traceback to dig through; recordings that are too short are skipped with a logged warning.
+
+---
+
+## Development and testing
 
 ```bash
 pip install -e ".[dev]"
-python -m pytest -q                 # 全部測試，含 doctest
+python -m pytest -q                 # all tests, doctests included
 python -m ruff check .
 python -m ruff format --check .
-# Python 3.10 語法閘門（任何 Python 版本都能跑）
+# Python 3.10 syntax gate (runs on any Python version)
 python -c "import ast,pathlib; [ast.parse(p.read_text(encoding='utf-8'), str(p), feature_version=(3, 10)) for p in pathlib.Path('.').rglob('*.py') if not {'.venv', 'build', 'dist', '__pycache__'} & set(p.parts)]"
 ```
 
-除了各模組的功能測試，另有兩個檢查專案本身的測試：
+Besides the functional tests of each module, two tests check the project itself:
 
-- `tests/test_python310_compat.py` 以 Python 3.10 的語法解析每個檔案，掃描 3.11 以後才有的標準函式庫名稱、NumPy 1.x 與 2.x 之間不相容的名稱，以及比宣告的相依版本下限更新的 API；也確認 `import voice_spectral_classifier` 與命令列不會載入 PyTorch 等選用套件。
-- `tests/test_documentation.py` 檢查文件用字（繁體字、台灣用語）與 README 的章節順序，也擋下不小心寫進檔案的本機路徑或 e-mail 地址。
+- `tests/test_python310_compat.py` parses every file with Python 3.10 syntax and scans for standard-library names that only exist from 3.11 on, names that are incompatible between NumPy 1.x and 2.x, and APIs newer than the declared minimum dependency versions. It also checks that `import voice_spectral_classifier` and the command line do not load optional packages such as PyTorch.
+- `tests/test_documentation.py` checks the wording of the docs (Traditional characters and Taiwan usage in the Chinese text) and the section order of both READMEs, and catches local paths or e-mail addresses written into a file by accident.
 
-examples 的三支腳本也由測試以 `--quick` 實際跑過一次。
+The tests also run the three example scripts once each with `--quick`.
 
-CNN 的測試需要 PyTorch。安裝 `dl` extra（CPU 版即可）後，這些測試會在本機實際訓練與推論，沒有安裝時自動略過。CI 在 Linux 與 Windows 上跑 Python 3.10–3.13，另外有一個 job 用最舊的相依版本（這些下限都能在 Python 3.10 安裝），一個 job 裝 CPU 版 PyTorch 跑 CNN 的測試。
+The CNN tests need PyTorch. With the `dl` extra installed (the CPU build is enough), they train and predict for real on the local machine; without it they are skipped. CI runs Python 3.10–3.13 on Linux and Windows, plus one job on the oldest dependency versions (all of these minimums install on Python 3.10) and one job that installs the CPU build of PyTorch for the CNN tests.
 
 ---
 
@@ -660,4 +665,4 @@ CNN 的測試需要 PyTorch。安裝 `dl` extra（CPU 版即可）後，這些�
 
 ## License
 
-MIT License，Copyright (c) 2026 RL。詳見 [LICENSE](LICENSE)。
+MIT License, Copyright (c) 2026 RL. See [LICENSE](LICENSE).

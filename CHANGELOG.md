@@ -7,6 +7,15 @@
 
 ## [Unreleased]
 
+### 新增
+
+- 英文版 README（`README.md`，GitHub 預設顯示），繁體中文版在 `README.zh-TW.md`。
+- 流程圖分英文與繁體中文兩版：英文版是 `docs/workflow.html` 與 `docs/images/workflow.png`，繁體中文版是 `docs/workflow.zh-TW.html` 與 `docs/images/workflow.zh-TW.png`。
+
+### 修正
+
+- 流程圖「全資料訓練」節點的模型檔名：預設的 CNN 存成 `model.pt`，MLP 與 logistic regression 存成 `model.joblib`。
+
 ---
 
 ## [0.1.0] - 2026-10-09

@@ -1,9 +1,11 @@
 """Wording and privacy checks on every text file.
 
-The docs are Traditional Chinese with Taiwan usage, and no file may contain a
-local path or an e-mail address that slipped in by accident. The mainland terms
-below are written as escapes, so searching the repository for one of them only
-turns up a real slip, not this list.
+README.md is English; README.zh-TW.md and the other docs are Traditional
+Chinese with Taiwan usage. The two READMEs are kept in step, so both get the
+same layout checks. No file may contain a local path or an e-mail address that
+slipped in by accident. The mainland terms below are written as escapes, so
+searching the repository for one of them only turns up a real slip, not this
+list.
 """
 
 from __future__ import annotations
@@ -15,10 +17,31 @@ import pytest
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 README = (PROJECT_ROOT / "README.md").read_text(encoding="utf-8")
+README_ZH = (PROJECT_ROOT / "README.zh-TW.md").read_text(encoding="utf-8")
 THIS_FILE = Path(__file__).resolve()
 
-#: Every level-2 heading of the README, in order.
+#: Every level-2 heading of the English README, in order.
 EXPECTED_H2 = [
+    "Contents",
+    "Overview",
+    "Method",
+    "Installation",
+    "Quick start",
+    "Usage examples",
+    "CLI reference",
+    "Project structure",
+    "Data preparation",
+    "Configuration files",
+    "Results and metrics",
+    "Known limitations",
+    "Design notes",
+    "Development and testing",
+    "References",
+    "License",
+]
+
+#: The same headings in the Traditional Chinese README.
+EXPECTED_H2_ZH = [
     "目錄",
     "專案簡介",
     "方法說明",
@@ -145,28 +168,56 @@ def test_the_patterns_catch_what_they_are_meant_to():
     assert not re.search(FORBIDDEN_PATTERNS["drive-letter path"], "$f:\\mathbb{R}$")
 
 
-def test_readme_headings_are_in_order():
-    headings = re.findall(r"^## (.+?)\s*$", README, re.MULTILINE)
-    assert headings == EXPECTED_H2
+def h2_headings(readme: str) -> list[str]:
+    return re.findall(r"^## (.+?)\s*$", readme, re.MULTILINE)
 
 
-def test_readme_opens_with_badges_and_author_and_closes_with_the_license():
+def check_title_badges_and_language_switch(readme: str, language_switch: str) -> None:
     pyproject = (PROJECT_ROOT / "pyproject.toml").read_text(encoding="utf-8")
     name = re.search(r'^name = "([^"]+)"$', pyproject, re.MULTILINE).group(1)
-    lines = README.splitlines()
+    lines = readme.splitlines()
     assert lines[0] == f"# {name}"
     assert lines[2].startswith("[![CI](") and lines[3].startswith("[![Python](")
     assert lines[4].startswith("[![License: MIT](")
-    assert "\n作者：RL\n" in README
-    assert "MIT License，Copyright (c) 2026 RL。詳見 [LICENSE](LICENSE)。" in README
+    assert lines[6] == language_switch
 
 
-def test_readme_is_mostly_chinese_prose():
-    assert len(_CJK.findall(README)) > 2000
+def test_readme_headings_are_in_order():
+    assert h2_headings(README) == EXPECTED_H2
 
 
-def test_readme_test_command_needs_no_pythonpath():
+def test_chinese_readme_headings_are_in_order():
+    assert h2_headings(README_ZH) == EXPECTED_H2_ZH
+
+
+def test_readme_opens_with_badges_and_author_and_closes_with_the_license():
+    check_title_badges_and_language_switch(README, "English | [繁體中文](README.zh-TW.md)")
+    assert "\nAuthor: RL\n" in README
+    assert "MIT License, Copyright (c) 2026 RL. See [LICENSE](LICENSE)." in README
+
+
+def test_chinese_readme_opens_with_badges_and_author_and_closes_with_the_license():
+    check_title_badges_and_language_switch(README_ZH, "[English](README.md) | 繁體中文")
+    assert "\n作者：RL\n" in README_ZH
+    assert "MIT License，Copyright (c) 2026 RL。詳見 [LICENSE](LICENSE)。" in README_ZH
+
+
+def test_readme_is_mostly_english_prose():
+    # The only Chinese in it is the link to the Chinese README. The Chinese
+    # README still has about 1,500 lowercase English words of three or more
+    # letters (code, config keys, references), so a floor of 3,000 tells the
+    # two apart.
+    assert len(_CJK.findall(README)) < 20
+    assert len(re.findall(r"\b[a-z]{3,}\b", README)) > 3000
+
+
+def test_chinese_readme_is_mostly_chinese_prose():
+    assert len(_CJK.findall(README_ZH)) > 2000
+
+
+@pytest.mark.parametrize("readme", [README, README_ZH], ids=["README.md", "README.zh-TW.md"])
+def test_readme_test_command_needs_no_pythonpath(readme):
     # pytest takes pythonpath = ["src"] from pyproject.toml, so the documented
     # command is plain "python -m pytest".
-    assert "python -m pytest -q" in README
-    assert "PYTHONPATH=src python -m pytest" not in README
+    assert "python -m pytest -q" in readme
+    assert "PYTHONPATH=src python -m pytest" not in readme
