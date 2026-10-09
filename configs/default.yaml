@@ -1,0 +1,48 @@
+# Default configuration.  Every key is optional; omitted keys keep these values.
+# Override single values on the command line with  --set section.key=value
+seed: 0                         # master seed: folds, model initialization, synthetic data
+data:
+  dataset: data/dataset.csv     # placeholder: point it at your own data
+synthetic:
+  class_names: [breathy, modal, rough]  # breathy | modal | rough (at least two)
+  n_speakers_per_class: [8, 10, 20]     # synthetic speakers per class, in class_names order
+  n_recordings_per_speaker: 2   # recordings per speaker (kept in the same fold)
+  severity_range: [0.2, 1.0]    # per non-modal speaker: 0 = modal, 1 = full breathy/rough quality
+  duration_s: 2.5               # voiced part of each recording, seconds
+  silence_s: 0.25               # near-silence before and after the voiced part, seconds
+  sample_rates: [22050, 24000]  # recording rates used in turn, Hz
+segmentation:
+  sample_rate: 16000            # every recording is resampled to this rate, Hz
+  trim_silence: true            # cut leading and trailing silence first
+  segment_s: 1.0                # segment length, seconds
+  hop_s: 1.0                    # segment advance, seconds (smaller than segment_s = overlap)
+  min_fraction: 0.5             # keep a zero-padded trailing piece filling at least this fraction
+  max_segments: null            # at most this many segments per recording, spread evenly; null = all
+spectrogram:
+  scale: linear                 # linear | mel
+  n_bands: 40                   # image rows: frequency bands from 0 Hz to fmax_hz
+  n_frames: 98                  # image columns: frames, interpolated to this count
+  frame_ms: 25.0                # analysis frame length, milliseconds
+  hop_ms: 10.0                  # frame advance, milliseconds
+  n_fft: null                   # FFT size; null = smallest power of two not shorter than the frame
+  window: hamming               # hamming | hann | blackman | boxcar
+  fmax_hz: 8000.0               # upper edge of the highest band, Hz
+  top_db: 80.0                  # grey level 0 lies this many dB below the segment's peak
+model:
+  name: cnn                     # cnn | mlp | logistic (cnn needs the dl extra)
+  n_epochs: 100                 # epochs (cnn); upper limit for mlp, which stops when the loss stalls
+  learning_rate: 0.001          # Adam step size (cnn, mlp)
+  batch_size: 60                # mini-batch size (cnn, mlp)
+  weight_decay: 0.0001          # L2 penalty: Adam weight decay (cnn), alpha (mlp)
+  class_weight: balanced        # balanced | null
+  dropout: 0.2                  # dropout before the four deeper convolution blocks (cnn)
+  hidden_units: [128]           # hidden layer sizes (mlp)
+  n_components: null            # principal components before mlp / logistic; null = none
+  logistic_c: 1.0               # inverse L2 regularization strength (logistic)
+  device: cpu                   # cpu | cuda (cnn)
+evaluation:
+  n_splits: 5                   # cross-validation folds, stratified and grouped
+output:
+  root: outputs                 # run folders are created here when --out is not given
+  figure_format: png            # png | pdf | svg
+  dpi: 150                      # resolution of raster figures

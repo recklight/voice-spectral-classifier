@@ -1,0 +1,54 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+build/
+dist/
+*.egg-info/
+.eggs/
+.venv/
+venv/
+
+# Testing / linting caches
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Recordings and run outputs stay out of git; point data.dataset at your own
+# data. .gitkeep keeps the two empty folders.
+data/*
+!data/.gitkeep
+outputs/*
+!outputs/.gitkeep
+examples/output/
+*.wav
+*.mat
+*.mfc
+*.dat
+*.bin
+*.npy
+*.npz
+*.joblib
+*.pt
+*.pth
+*.ckpt
+*.xlsx
+*.xls
+*.jpg
+*.jpeg
+*.bmp
+# Dataset and segment indexes carry labels and speaker codes, predictions
+# carry input paths; keep them out even when a run writes them outside
+# data/ and outputs/.
+dataset.csv
+items.csv
+predictions.csv
+recording_predictions.csv
+
+# Editors / OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db

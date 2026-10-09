@@ -1,0 +1,14 @@
+# Small, fast settings for synthetic data (examples, smoke tests, CI).
+data:
+  dataset: data/synthetic/dataset.csv
+synthetic:
+  n_speakers_per_class: [5, 5, 8]
+  n_recordings_per_speaker: 1
+  duration_s: 2.0
+model:
+  name: mlp
+  n_epochs: 60
+  batch_size: 16
+  hidden_units: [32]
+evaluation:
+  n_splits: 3

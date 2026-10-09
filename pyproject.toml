@@ -1,0 +1,97 @@
+[build-system]
+requires = ["setuptools>=77", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "voice-spectral-classifier"
+version = "0.1.0"
+description = "Pathological voice classification: one-second segments become 40x98 spectrogram images for a small CNN or an MLP, scored by grouped, stratified cross-validation."
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "RL" }]
+maintainers = [{ name = "RL" }]
+keywords = [
+    "pathological-voice",
+    "spectrogram",
+    "convolutional-neural-network",
+    "speech-processing",
+    "cross-validation",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Multimedia :: Sound/Audio :: Analysis",
+    "Topic :: Scientific/Engineering :: Medical Science Apps.",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Typing :: Typed",
+]
+# Everything the package imports at module level is listed, even when another
+# requirement already pulls it in (joblib arrives with scikit-learn, but the
+# package imports it directly).
+dependencies = [
+    "speechdsp>=0.2.0",
+    "numpy>=1.24",
+    "scipy>=1.10",
+    "scikit-learn>=1.2",
+    "pandas>=1.5",
+    "matplotlib>=3.6",
+    "pyyaml>=6.0",
+    "typer>=0.12",
+    "joblib>=1.2",
+]
+
+[project.optional-dependencies]
+# PyTorch models; imported lazily, so the package and its scikit-learn models work without it.
+dl = ["torch>=2.2"]
+dev = ["pytest>=7.2", "ruff>=0.4"]
+
+[project.scripts]
+voice-spectral-classifier = "voice_spectral_classifier.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/recklight/voice-spectral-classifier"
+Repository = "https://github.com/recklight/voice-spectral-classifier"
+Issues = "https://github.com/recklight/voice-spectral-classifier/issues"
+Changelog = "https://github.com/recklight/voice-spectral-classifier/blob/master/CHANGELOG.md"
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+voice_spectral_classifier = ["py.typed"]
+
+[tool.pytest.ini_options]
+minversion = "7.2"
+testpaths = ["tests", "src"]
+# "src" makes the package importable straight from a checkout, without installing.
+pythonpath = ["src"]
+addopts = "-ra --strict-markers --strict-config --doctest-modules"
+# Unit tests train tiny networks for a handful of iterations on purpose.
+filterwarnings = ["ignore::sklearn.exceptions.ConvergenceWarning"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+src = ["src", "tests", "examples"]
+
+[tool.ruff.format]
+# Ruff 0.16+ also formats code blocks in Markdown; the README examples are aligned by hand.
+exclude = ["*.md"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "C4", "SIM", "RUF"]
+# Documentation tests and interface text are Traditional Chinese, which uses
+# full-width punctuation.
+allowed-confusables = ["（", "）", "，", "：", "；", "！", "？", "／"]
